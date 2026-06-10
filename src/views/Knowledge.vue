@@ -1,350 +1,331 @@
 <template>
-  <div class="knowledge-container">
-    <!-- 左侧笔记列表 -->
-    <div class="sidebar">
-      <div class="sidebar-header">
-        <el-input
-          v-model="searchQuery"
-          placeholder="搜索笔记..."
-          prefix-icon="Search"
-          clearable
-          size="default"
-        />
-        <el-button type="primary" :icon="Plus" circle @click="createNote" class="add-btn" />
+  <div class="voice-container">
+    <!-- 顶部标题区 -->
+    <header class="header">
+      <h1>LifeSpace · 语音知识库</h1>
+      <p class="subtitle">点击麦克风，说出你的想法，即刻保存</p>
+    </header>
+
+    <!-- 核心输入区 -->
+    <main class="input-area">
+      <!-- 标题输入 -->
+      <input 
+        v-model="currentNote.title" 
+        placeholder="笔记标题 (可选)..." 
+        class="title-input" 
+        @blur="saveNote"
+      />
+
+      <!-- 内容显示/输入区 -->
+      <div 
+        ref="contentRef"
+        contenteditable="true" 
+        class="content-input" 
+        placeholder="点击麦克风开始说话，或直接输入..."
+        @input="onContentInput"
+      >
+        {{ currentNote.content || '' }}
       </div>
-      
-      <div class="note-list" v-if="filteredNotes.length > 0">
-        <div
-          v-for="note in filteredNotes"
-          :key="note.id"
-          class="note-item"
-          :class="{ active: currentNote && currentNote.id === note.id }"
-          @click="selectNote(note.id)"
+
+      <!-- 状态提示 -->
+      <div class="status-bar">
+        <span v-if="isListening" class="listening">🔴 正在聆听...</span>
+        <span v-else class="saved">{{ saveStatus }}</span>
+      </div>
+
+      <!-- 控制按钮 -->
+      <div class="controls">
+        <button 
+          class="mic-btn" 
+          :class="{ active: isListening }" 
+          @click="toggleVoice"
+          :disabled="!isVoiceSupported"
         >
-          <div class="note-title">{{ note.title || '无标题笔记' }}</div>
-          <div class="note-meta">
-            <span class="note-date">{{ formatDate(note.updateTime) }}</span>
-          </div>
-        </div>
+          <span v-if="isListening">⏹️</span>
+          <span v-else>🎙️</span>
+        </button>
+        <p class="hint" v-if="!isVoiceSupported">当前浏览器不支持语音输入，请使用 Chrome</p>
       </div>
-      <el-empty v-else description="暂无笔记，点击 + 创建" :image-size="100" />
+    </main>
+
+    <!-- 历史列表 (极简折叠) -->
+    <div class="history-toggle" @click="showHistory = !showHistory">
+      {{ showHistory ? ' 收起历史' : ' 查看历史' }}
     </div>
-
-    <!-- 右侧编辑器区域 -->
-    <div class="editor-area">
-      <div v-if="currentNote" class="editor-header">
-        <el-input
-          v-model="currentNote.title"
-          placeholder="输入笔记标题..."
-          class="title-input"
-          @blur="saveCurrentNote"
-          @keyup.enter="saveCurrentNote"
-        />
-        <div class="editor-actions">
-          <span class="save-status">{{ saveStatus }}</span>
-          <el-button type="danger" :icon="Delete" text @click="confirmDelete">删除</el-button>
-        </div>
+    
+    <div v-if="showHistory" class="history-list">
+      <div 
+        v-for="note in notes" 
+        :key="note.id" 
+        class="history-item"
+        @click="loadNote(note)"
+      >
+        <strong>{{ note.title || '无标题' }}</strong>
+        <span class="time">{{ new Date(note.updateTime).toLocaleString() }}</span>
       </div>
-
-      <div v-if="currentNote" id="vditor-container" class="vditor-wrapper"></div>
-      <el-empty v-else description="选择或创建一个笔记开始记录" :image-size="150" />
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
-import { Plus, Delete, Search } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import Vditor from 'vditor'
-import 'vditor/dist/index.css'
-import { getAllNotes, getNote, saveNote, deleteNote } from '../utils/db'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { getAllNotes, saveNote, deleteNote } from '../utils/db'
 
-// 状态
 const notes = ref([])
-const currentNote = ref(null)
-const searchQuery = ref('')
-const saveStatus = ref('')
-let vditor = null
+const currentNote = ref({ id: '', title: '', content: '' })
+const isListening = ref(false)
+const saveStatus = ref('已保存')
+const showHistory = ref(false)
+const isVoiceSupported = ref(true)
 
-// 过滤笔记
-const filteredNotes = computed(() => {
-  if (!searchQuery.value) return notes.value
-  const query = searchQuery.value.toLowerCase()
-  return notes.value.filter(note => 
-    (note.title && note.title.toLowerCase().includes(query)) || 
-    (note.content && note.content.toLowerCase().includes(query))
-  )
-})
+let recognition = null
+let contentRef = null
 
-// 格式化日期
-const formatDate = (isoString) => {
-  if (!isoString) return ''
-  const date = new Date(isoString)
-  return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+// 初始化语音识别
+const initVoice = () => {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+  if (!SpeechRecognition) {
+    isVoiceSupported.value = false
+    return
+  }
+
+  recognition = new SpeechRecognition()
+  recognition.lang = 'zh-CN'
+  recognition.continuous = true // 持续录音
+  recognition.interimResults = true // 实时显示中间结果
+
+  recognition.onstart = () => { isListening.value = true }
+  recognition.onend = () => { isListening.value = false }
+  
+  recognition.onresult = (event) => {
+    let finalTranscript = ''
+    let interimTranscript = ''
+
+    for (let i = event.resultIndex; i < event.results.length; ++i) {
+      const transcript = event.results[i][0].transcript
+      if (event.results[i].isFinal) {
+        finalTranscript += transcript
+      } else {
+        interimTranscript += transcript
+      }
+    }
+
+    // 追加到当前内容
+    if (finalTranscript) {
+      currentNote.value.content = (currentNote.value.content || '') + finalTranscript + ' '
+      saveNote() // 语音输入一段后自动保存
+    }
+    
+    // 更新 DOM 显示 (因为 contenteditable 双向绑定比较复杂，这里直接操作 DOM)
+    if (contentRef.value) {
+      contentRef.value.textContent = currentNote.value.content || ''
+    }
+  }
+
+  recognition.onerror = (event) => {
+    console.error('语音识别错误:', event.error)
+    isListening.value = false
+    if (event.error === 'not-allowed') {
+      alert('请允许麦克风权限')
+    }
+  }
 }
 
-// 加载笔记列表
+const toggleVoice = () => {
+  if (!recognition) return
+  
+  if (isListening.value) {
+    recognition.stop()
+  } else {
+    // 如果没有内容，创建一个新笔记
+    if (!currentNote.value.id) {
+      createNewNote()
+    }
+    recognition.start()
+  }
+}
+
+const createNewNote = async () => {
+  currentNote.value = {
+    id: Date.now().toString(),
+    title: '',
+    content: '',
+    updateTime: new Date().toISOString()
+  }
+  if (contentRef.value) contentRef.value.textContent = ''
+}
+
+const onContentInput = () => {
+  if (contentRef.value) {
+    currentNote.value.content = contentRef.value.textContent
+  }
+  saveNote()
+}
+
+let saveTimer
+const saveNote = async () => {
+  if (!currentNote.value.id) return
+  saveStatus.value = '保存中...'
+  
+  clearTimeout(saveTimer)
+  saveTimer = setTimeout(async () => {
+    try {
+      currentNote.value.updateTime = new Date().toISOString()
+      await saveNote(currentNote.value)
+      saveStatus.value = '✅ 已保存'
+      loadNotes() // 刷新列表
+    } catch (e) {
+      saveStatus.value = '❌ 保存失败'
+    }
+  }, 1000)
+}
+
 const loadNotes = async () => {
   try {
     notes.value = await getAllNotes()
-  } catch (error) {
-    console.error('加载笔记失败:', error)
-    ElMessage.error('加载笔记失败')
+  } catch (e) {
+    console.error(e)
   }
 }
 
-// 创建新笔记
-const createNote = async () => {
-  const newNote = {
-    id: Date.now().toString(),
-    title: '新笔记',
-    content: '# 新笔记\n\n开始你的创作...',
-    updateTime: new Date().toISOString()
+const loadNote = (note) => {
+  currentNote.value = { ...note }
+  if (contentRef.value) contentRef.value.textContent = note.content || ''
+  showHistory.value = false
+}
+
+onMounted(() => {
+  initVoice()
+  loadNotes()
+  // 默认加载最新的一条，或者新建一条
+  if (notes.value.length > 0) {
+    loadNote(notes.value[0])
+  } else {
+    createNewNote()
   }
-  try {
-    await saveNote(newNote)
-    await loadNotes()
-    selectNote(newNote.id)
-    ElMessage.success('笔记已创建')
-  } catch (error) {
-    ElMessage.error('创建失败')
-  }
-}
-
-// 选择笔记
-const selectNote = async (id) => {
-  try {
-    currentNote.value = await getNote(id)
-    await nextTick() // 等待 DOM 更新
-    initVditor(currentNote.value.content)
-  } catch (error) {
-    ElMessage.error('加载笔记内容失败')
-  }
-}
-
-// 初始化 Vditor
-const initVditor = (content) => {
-  if (vditor) {
-    vditor.destroy()
-  }
-  
-  vditor = new Vditor('vditor-container', {
-    height: '100%',
-    mode: 'ir', // 即时渲染模式
-    cache: { enable: false }, // 禁用默认缓存，使用我们的 IndexedDB
-    placeholder: '支持 Markdown 语法...',
-    toolbar: [
-      'emoji', 'headings', 'bold', 'italic', 'strike', 'link', '|',
-      'list', 'ordered-list', 'check', 'outdent', 'indent', '|',
-      'quote', 'line', 'code', 'inline-code', 'insert-before', 'insert-after', '|',
-      'upload', 'record', 'table', '|',
-      'undo', 'redo', '|',
-      'fullscreen', 'edit-mode', 'both', 'preview', 'outline', 'code-theme', 'content-theme', 'export',
-      'devtools', 'help'
-    ],
-    preview: {
-      markdown: {
-        toc: true, // 目录
-        mark: true, // 高亮
-        math: { engine: 'KaTeX' }, // 数学公式
-      },
-      hljs: { style: 'github' }, // 代码高亮
-    },
-    input: (value) => {
-      if (currentNote.value) {
-        currentNote.value.content = value
-        saveCurrentNote()
-      }
-    },
-    after: () => {
-      if (content) {
-        vditor.setValue(content)
-      }
-    }
-  })
-}
-
-// 保存当前笔记（防抖逻辑简化为直接调用，实际可加 debounce）
-let saveTimer = null
-const saveCurrentNote = async () => {
-  if (!currentNote.value) return
-  
-  saveStatus.value = '保存中...'
-  clearTimeout(saveTimer)
-  
-  // 简单防抖，300ms 后保存
-  saveTimer = setTimeout(async () => {
-    try {
-      // 同步标题，防止标题修改了但内容没变导致不触发 input
-      const noteToSave = { ...currentNote.value }
-      if (vditor) {
-        noteToSave.content = vditor.getValue()
-      }
-      
-      await saveNote(noteToSave)
-      saveStatus.value = '已保存'
-      // 更新列表中的 updateTime 和 title
-      await loadNotes()
-    } catch (error) {
-      saveStatus.value = '保存失败'
-      console.error(error)
-    }
-  }, 500)
-}
-
-// 删除笔记
-const confirmDelete = async () => {
-  if (!currentNote.value) return
-  
-  ElMessageBox.confirm(
-    `确定要删除笔记 "${currentNote.value.title}" 吗？此操作无法撤销。`,
-    '警告',
-    { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
-  ).then(async () => {
-    try {
-      await deleteNote(currentNote.value.id)
-      if (vditor) vditor.destroy()
-      vditor = null
-      currentNote.value = null
-      await loadNotes()
-      ElMessage.success('笔记已删除')
-    } catch (error) {
-      ElMessage.error('删除失败')
-    }
-  }).catch(() => {})
-}
-
-// 监听标题变化
-watch(() => currentNote.value?.title, () => {
-  saveCurrentNote()
 })
 
-// 初始化
-onMounted(() => {
-  loadNotes()
+onUnmounted(() => {
+  if (recognition) recognition.stop()
 })
 </script>
 
 <style scoped>
-.knowledge-container {
-  display: flex;
+.voice-container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 40px 20px;
   height: 100%;
-  background-color: #f0f2f5;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
-}
-
-.sidebar {
-  width: 300px;
-  background: white;
-  border-right: 1px solid #e6e6e6;
   display: flex;
   flex-direction: column;
 }
 
-.sidebar-header {
-  padding: 15px;
-  border-bottom: 1px solid #e6e6e6;
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.header {
+  text-align: center;
+  margin-bottom: 30px;
 }
+.header h1 { margin: 0; font-size: 28px; color: #333; }
+.subtitle { color: #888; margin-top: 10px; }
 
-.add-btn {
-  flex-shrink: 0;
-}
-
-.note-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 10px 0;
-}
-
-.note-item {
-  padding: 12px 15px;
-  cursor: pointer;
-  border-bottom: 1px solid #f0f0f0;
-  transition: background 0.2s;
-}
-
-.note-item:hover {
-  background-color: #f5f7fa;
-}
-
-.note-item.active {
-  background-color: #ecf5ff;
-  border-left: 3px solid #409eff;
-}
-
-.note-title {
-  font-size: 15px;
-  font-weight: 500;
-  color: #303133;
-  margin-bottom: 5px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.note-meta {
-  font-size: 12px;
-  color: #909399;
-}
-
-.editor-area {
+.input-area {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: white;
-  position: relative;
-}
-
-.editor-header {
-  padding: 15px 20px;
-  border-bottom: 1px solid #e6e6e6;
-  display: flex;
-  align-items: center;
-  gap: 15px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+  padding: 20px;
+  overflow: hidden;
 }
 
 .title-input {
-  flex: 1;
-}
-
-.title-input :deep(.el-input__wrapper) {
-  box-shadow: none !important;
-  padding-left: 0;
-}
-
-.title-input :deep(.el-input__inner) {
-  font-size: 20px;
+  border: none;
+  border-bottom: 1px solid #eee;
+  padding: 10px 0;
+  font-size: 24px;
   font-weight: bold;
+  outline: none;
+  width: 100%;
+  margin-bottom: 15px;
 }
 
-.editor-actions {
+.content-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 18px;
+  line-height: 1.6;
+  resize: none;
+  overflow-y: auto;
+  color: #444;
+  min-height: 200px;
+}
+.content-input:empty:before {
+  content: attr(placeholder);
+  color: #ccc;
+}
+
+.status-bar {
+  height: 30px;
+  margin-top: 10px;
+  font-size: 14px;
+  color: #666;
+}
+.listening { color: #f56c6c; font-weight: bold; animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: 0.5; } }
+
+.controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #eee;
+}
+
+.mic-btn {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  border: none;
+  background: #409eff;
+  color: white;
+  font-size: 24px;
+  cursor: pointer;
+  transition: all 0.3s;
   display: flex;
   align-items: center;
-  gap: 15px;
+  justify-content: center;
 }
+.mic-btn.active {
+  background: #f56c6c;
+  transform: scale(1.1);
+}
+.mic-btn:disabled { background: #ccc; cursor: not-allowed; }
 
-.save-status {
-  font-size: 12px;
-  color: #67c23a;
-}
+.hint { color: #999; font-size: 12px; }
 
-.vditor-wrapper {
-  flex: 1;
-  overflow: hidden;
+.history-toggle {
+  text-align: center;
+  padding: 10px;
+  cursor: pointer;
+  color: #409eff;
+  font-weight: bold;
 }
-
-/* 覆盖 Vditor 样式以适应布局 */
-:deep(.vditor) {
-  border: none !important;
+.history-list {
+  max-height: 200px;
+  overflow-y: auto;
+  background: #fafafa;
+  border-radius: 8px;
+  padding: 10px;
 }
-:deep(.vditor-toolbar) {
-  border-bottom: 1px solid #e6e6e6 !important;
-  background-color: #fafafa !important;
+.history-item {
+  padding: 8px;
+  border-bottom: 1px solid #eee;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
 }
+.history-item:hover { background: #eef; }
+.history-item .time { font-size: 12px; color: #999; }
 </style>
