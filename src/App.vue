@@ -14,6 +14,10 @@
           <el-icon><document /></el-icon>
           <span>知识库</span>
         </el-menu-item>
+        <el-menu-item index="/graph">
+          <el-icon><connection /></el-icon>
+          <span>知识图谱</span>
+        </el-menu-item>
         <el-menu-item index="/mood">
           <el-icon><sunny /></el-icon>
           <span>心情日记</span>

@@ -8,6 +8,12 @@ const routes = [
     meta: { title: '知识库', icon: 'Document' }
   },
   {
+    path: '/graph',
+    name: 'Graph',
+    component: () => import('../views/Graph.vue'),
+    meta: { title: '知识图谱', icon: 'Connection' }
+  },
+  {
     path: '/mood',
     name: 'Mood',
     component: () => import('../views/Mood.vue'),
