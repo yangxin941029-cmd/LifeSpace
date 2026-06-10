@@ -3,6 +3,6 @@ import vue from '@vitejs/plugin-vue'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/LifeSpace/', // GitHub Pages base path
+  base: process.env.NODE_ENV === 'production' ? '/LifeSpace/' : '/',
   plugins: [vue()],
 })
