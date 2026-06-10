@@ -13,7 +13,7 @@
         v-model="currentNote.title" 
         placeholder="笔记标题 (可选)..." 
         class="title-input" 
-        @blur="saveNote"
+        @blur="handleSave"
       />
 
       <!-- 内容显示/输入区 -->
@@ -113,7 +113,7 @@ const initVoice = () => {
     // 追加到当前内容
     if (finalTranscript) {
       currentNote.value.content = (currentNote.value.content || '') + finalTranscript + ' '
-      saveNote() // 语音输入一段后自动保存
+      handleSave() // 语音输入一段后自动保存
     }
     
     // 更新 DOM 显示 (因为 contenteditable 双向绑定比较复杂，这里直接操作 DOM)
@@ -159,11 +159,11 @@ const onContentInput = () => {
   if (contentRef.value) {
     currentNote.value.content = contentRef.value.textContent
   }
-  saveNote()
+  handleSave()
 }
 
 let saveTimer
-const saveNote = async () => {
+const handleSave = async () => {
   if (!currentNote.value.id) return
   saveStatus.value = '保存中...'
   
@@ -171,7 +171,7 @@ const saveNote = async () => {
   saveTimer = setTimeout(async () => {
     try {
       currentNote.value.updateTime = new Date().toISOString()
-      await saveNote(currentNote.value)
+      await saveNote(currentNote.value) // Calls the imported DB function
       saveStatus.value = '✅ 已保存'
       loadNotes() // 刷新列表
     } catch (e) {
